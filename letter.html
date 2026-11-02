@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>律师函批量生成</title>
+<style>
+ *{box-sizing:border-box}
+ body{font:14px/1.6 -apple-system,"Microsoft YaHei",sans-serif;margin:0;background:#f6f7f9;color:#222}
+ .wrap{max-width:900px;margin:0 auto;padding:24px 16px 60px}
+ h1{font-size:20px;margin:0 0 4px}
+ .sub{color:#666;margin-bottom:18px;font-size:13px}
+ a{color:#2f6fed;text-decoration:none}
+ .card{background:#fff;border:1px solid #e3e5e8;border-radius:10px;padding:16px;margin-bottom:14px}
+ .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:10px 0}
+ label{font-size:13px;color:#444}
+ input[type=number],input[type=text]{padding:6px 8px;border:1px solid #d0d4da;border-radius:6px;font:inherit}
+ button{background:#2f6fed;color:#fff;border:0;border-radius:8px;padding:9px 18px;font:inherit;cursor:pointer}
+ button:disabled{background:#9db4e0;cursor:default}
+ button.mini{background:#eef1f6;color:#333;padding:6px 12px;border-radius:6px;font-size:13px}
+ .bar{height:8px;background:#e9ecf1;border-radius:4px;overflow:hidden;margin:10px 0}
+ .bar>i{display:block;height:100%;width:0;background:#2f6fed;transition:width .2s}
+ pre{background:#0f1720;color:#cfe3ff;padding:10px;border-radius:8px;height:170px;overflow:auto;
+     font:12px/1.5 Consolas,monospace;white-space:pre-wrap;margin:0}
+ .hide{display:none}
+ .err{color:#c62828;font-weight:600}
+ a.dl{display:inline-block;background:#17864b;color:#fff;padding:9px 16px;border-radius:8px;text-decoration:none}
+ .hint{color:#888;font-size:12px}
+ table{border-collapse:collapse;width:100%;font-size:13px}
+ th,td{border-bottom:1px solid #eceef2;padding:4px 6px;text-align:left;white-space:nowrap;
+       overflow:hidden;text-overflow:ellipsis;max-width:180px}
+ th{color:#666;font-weight:500;background:#fafbfc}
+</style></head><body><div class="wrap">
+<h1>律师函批量生成</h1>
+<div class="sub">上传清单 xlsx + 模板 docx → 每行一份 PDF → 打包下载。全程在本浏览器完成，不上传、不依赖 Word。</div>
+<div class="sub" style="margin-bottom:12px"><a href="/">OCR + 脱敏</a> · <a href="/img2pdf">图片转 PDF</a> · <a href="/letter">律师函批量生成</a></div>
+<div class="card">
+  <div class="row">
+    <label>① 数据清单</label><input type="file" id="xls" accept=".xlsx,.xls">
+    <span class="hint" id="xlsInfo"></span>
+  </div>
+  <div class="row">
+    <label>② 模板 docx</label><input type="file" id="tpl" accept=".docx">
+    <span class="hint" id="tplInfo"></span>
+  </div>
+  <div class="row">
+    <label>③ 起始律函字</label><input type="number" id="lid" value="37815" style="width:110px">
+    <span class="hint">按 Excel 行号递增（第 2 行 = 起始值）</span>
+  </div>
+  <div class="row">
+    <label>字体</label><button class="mini" id="fontBtn">换成本机字体(.ttf)</button>
+    <input type="file" id="font" accept=".ttf,.otf" class="hide">
+    <span class="hint" id="fontInfo">默认用内置开源字体 LXGW 文楷</span>
+  </div>
+</div>
+
+<div class="card" id="previewCard" style="display:none">
+  <div class="row" style="margin-top:0"><b>前 5 行预览</b><span class="hint" id="rowInfo"></span></div>
+  <div id="preview"></div>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-top:0">
+    <button id="go" disabled>生成并打包下载</button>
+    <span class="hint" id="state"></span>
+  </div>
+  <div class="bar"><i id="bar"></i></div>
+  <pre id="log">等待上传清单与模板…</pre>
+  <div id="result" class="row hide"></div>
+</div>
+</div>
+<script src="static/letter.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let rows = [], tplBytes = null, tplName = "", fontBytes = null;
+
+const log = s => { $('log').textContent += s + '\n'; $('log').scrollTop = 1e9; };
+const norm = s => String(s == null ? '' : s).trim();
+
+function renderPreview(header) {
+  const box = $('preview');
+  box.innerHTML = '';
+  $('previewCard').style.display = '';
+  $('rowInfo').textContent = '共 ' + rows.length + ' 行数据（不含表头）';
+  const t = document.createElement('table');
+  const hr = document.createElement('tr');
+  ['行', '合同号', '姓名', '手机', '欠款', '回电', '接电人'].forEach(h => {
+    const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
+  });
+  t.appendChild(hr);
+  rows.slice(0, 5).forEach(r => {
+    const tr = document.createElement('tr');
+    [r.excelRow, r.contract, r.name, r.phone, r.money, r.ltel, r.lname].forEach(v => {
+      const td = document.createElement('td'); td.textContent = String(v == null ? '' : v); tr.appendChild(td);
+    });
+    t.appendChild(tr);
+  });
+  box.appendChild(t);
+  $('go').disabled = !(rows.length && tplBytes);
+}
+
+$('xls').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const res = Letter.readSheet(new Uint8Array(await f.arrayBuffer()));
+    rows = res.rows;
+    $('xlsInfo').textContent = f.name + ' · ' + rows.length + ' 行 · 表头: ' + res.header.slice(0, 8).join(' | ');
+    log('读入清单: ' + f.name + ', ' + rows.length + ' 行');
+    renderPreview(res.header);
+  } catch (err) {
+    $('xlsInfo').innerHTML = '<span class="err">' + err.message + '</span>';
+  }
+};
+
+$('tpl').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  tplName = f.name;
+  tplBytes = new Uint8Array(await f.arrayBuffer());
+  $('tplInfo').textContent = f.name + ' · ' + (tplBytes.length / 1024).toFixed(0) + ' KB';
+  log('读入模板: ' + f.name);
+  $('go').disabled = !(rows.length && tplBytes);
+};
+
+$('fontBtn').onclick = () => $('font').click();
+$('font').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  fontBytes = new Uint8Array(await f.arrayBuffer());
+  $('fontInfo').textContent = '使用本机字体: ' + f.name + ' (' + (fontBytes.length / 1048576).toFixed(1) + ' MB)';
+};
+
+async function defaultFont() {
+  if (fontBytes) return fontBytes;
+  const r = await fetch('static/fonts/LXGWWenKai-Regular.ttf');
+  if (!r.ok) throw new Error('内置字体没加载到(/static/fonts/LXGWWenKai-Regular.ttf)');
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+$('go').onclick = async () => {
+  const go = $('go');
+  go.disabled = true;
+  $('log').textContent = '';
+  $('result').className = 'row hide';
+  $('bar').style.width = '0%';
+  const lid0 = parseInt($('lid').value, 10);
+  if (!Number.isFinite(lid0)) { $('state').innerHTML = '<span class="err">起始律函字必须是整数</span>'; go.disabled = false; return; }
+
+  try {
+    $('state').textContent = '载入字体…';
+    const font = { regular: await defaultFont() };
+    log('字体已就绪, 开始逐条生成…');
+
+    const entries = [];
+    let ok = 0, skip = 0, fail = 0, missWarn = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const lid = lid0 + (row.excelRow - 2);
+      if (!row.contract || !row.name) {
+        skip++;
+        log('跳过第 ' + row.excelRow + ' 行: 缺合同号或姓名');
+        continue;
+      }
+      try {
+        const { bytes: docxBytes, missing } = Letter.fillDocx(tplBytes, Letter.rowToValues(row, lid));
+        if (missing.length) { missWarn++; log('第 ' + row.excelRow + ' 行: 模板里没找到占位符 ' + missing.join(',')); }
+        const { bytes: pdfBytes } = await Letter.toPdf(docxBytes, { regular: font.regular });
+        entries.push({ name: Letter.fileBase(row, lid) + '.pdf', bytes: pdfBytes });
+        ok++;
+      } catch (e) {
+        fail++;
+        log('第 ' + row.excelRow + ' 行失败: ' + (e && e.message ? e.message : e));
+      }
+      const pct = Math.round((i + 1) * 100 / rows.length);
+      $('bar').style.width = pct + '%';
+      $('state').textContent = (i + 1) + '/' + rows.length + ' (' + pct + '%)';
+      if (i % 5 === 4) await new Promise(r => setTimeout(r, 0));   // 让界面刷新
+    }
+
+    if (!entries.length) throw new Error('没有生成任何 PDF');
+    $('state').textContent = '打包…';
+    const zipBytes = Letter.buildZip(entries);
+    const base = tplName.replace(/\.docx$/i, '') || '律师函';
+    const a = document.createElement('a');
+    a.className = 'dl';
+    a.href = URL.createObjectURL(new Blob([zipBytes], { type: 'application/zip' }));
+    a.download = base + '_' + ok + '份.zip';
+    a.textContent = '下载 ' + a.download + ' (' + (zipBytes.length / 1048576).toFixed(1) + ' MB)';
+    $('result').innerHTML = '';
+    $('result').appendChild(a);
+    $('result').className = 'row';
+    $('state').textContent = '完成: 成功 ' + ok + ', 跳过 ' + skip + ', 失败 ' + fail;
+    log('—— 完成: 成功 ' + ok + ', 跳过 ' + skip + ', 失败 ' + fail +
+        (missWarn ? ', 占位符告警 ' + missWarn : ''));
+  } catch (e) {
+    $('state').innerHTML = '<span class="err">' + (e && e.message ? e.message : e) + '</span>';
+    log('失败: ' + (e && e.message ? e.message : e));
+  } finally {
+    go.disabled = false;
+  }
+};
+</script></body></html>

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>OCR + 脱敏</title>
+<style>
+ *{box-sizing:border-box}
+ body{font:14px/1.6 -apple-system,"Microsoft YaHei",sans-serif;margin:0;background:#f6f7f9;color:#222}
+ .wrap{max-width:820px;margin:0 auto;padding:24px 16px 60px}
+ h1{font-size:20px;margin:0 0 4px}
+ .sub{color:#666;margin-bottom:18px;font-size:13px}
+ .card{background:#fff;border:1px solid #e3e5e8;border-radius:10px;padding:16px;margin-bottom:14px}
+ .drop{border:2px dashed #c8ccd2;border-radius:10px;padding:26px;text-align:center;color:#666;cursor:pointer}
+ .drop.on{border-color:#2f6fed;background:#f2f6ff;color:#2f6fed}
+ .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:10px 0}
+ label{font-size:13px;color:#444}
+ input[type=text],input[type=number],select{padding:6px 8px;border:1px solid #d0d4da;border-radius:6px;font:inherit}
+ input[type=number]{width:80px}
+ button{background:#2f6fed;color:#fff;border:0;border-radius:8px;padding:9px 18px;font:inherit;cursor:pointer}
+ button:disabled{background:#9db4e0;cursor:default}
+ .bar{height:8px;background:#e9ecf1;border-radius:4px;overflow:hidden;margin:10px 0}
+ .bar>i{display:block;height:100%;width:0;background:#2f6fed;transition:width .3s}
+ pre{background:#0f1720;color:#cfe3ff;padding:10px;border-radius:8px;height:190px;overflow:auto;
+     font:12px/1.5 Consolas,monospace;white-space:pre-wrap;margin:0}
+ .hide{display:none}
+ .ok{color:#17864b;font-weight:600}
+ .err{color:#c62828;font-weight:600}
+ a.dl{display:inline-block;margin-right:12px;background:#17864b;color:#fff;padding:8px 14px;
+      border-radius:8px;text-decoration:none}
+ .hint{color:#888;font-size:12px}
+</style></head><body><div class="wrap">
+<h1>OCR + 脱敏</h1>
+<div class="sub">传 PDF → 逐页识别 → 下载 txt。默认走服务器端纯 CPU 引擎,那台机器没有显卡也能跑。
+浏览器只负责上传和下载,识别不占用你当前电脑的 CPU。</div>
+<div class="sub" style="margin-bottom:12px"><a href="/">OCR + 脱敏</a> · <a href="/img2pdf">图片转 PDF</a> · <a href="/letter">律师函批量生成</a></div>
+
+<div class="card">
+  <div class="drop" id="drop">把 PDF 拖到这里,或点一下选择文件
+    <div class="hint" id="pick"></div></div>
+  <input type="file" id="file" accept=".pdf" class="hide">
+
+  <div class="row">
+    <label>引擎</label>
+    <select id="engine">
+      <option value="client" selected>这台电脑的浏览器 (WASM, 不上传 PDF)</option>
+    </select>
+    <label>DPI</label><input type="number" id="dpi" value="220" min="72" max="600">
+  </div>
+  <div class="row hide" id="llmBox">
+    <label>服务地址</label><input type="text" id="server" value="http://localhost:1234/v1" size="34">
+    <label>模型</label><input type="text" id="model" value="deepseek-ocr-2" size="20">
+  </div>
+
+  <div class="row">
+    <label><input type="checkbox" id="deid" checked> 识别后自动脱敏</label>
+    <select id="mode"><option value="mask">替换(星号/替换词)</option>
+                       <option value="delete">删除</option></select>
+    <label><input type="checkbox" id="rules" checked> 正则兜底</label>
+  </div>
+  <div class="row">
+    <label>字段字典</label><input type="file" id="dict" accept=".txt">
+    <span class="hint">不选则用服务器上的 字段字典.txt</span>
+  </div>
+
+  <div class="row"><button id="go" disabled>开始识别</button>
+    <span class="hint" id="state"></span></div>
+  <div class="bar"><i id="bar"></i></div>
+  <pre id="log">等待上传…</pre>
+  <div id="result" class="row hide"></div>
+</div>
+
+<div class="card sub" style="margin:0">纯静态站点:没有任何后端,PDF 不离开你的浏览器。首次要下载 ~30MB 识别模型(之后浏览器缓存);手机/低配机较慢。</div>
+</div>
+<script src="coi-serviceworker.js"></script>
+<script src="static/app.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+// 页面一打开就把「本机能不能跑浏览器端引擎」摆出来, 省得点下去才发现不行
+window.addEventListener('load', () => {
+  const d = document.createElement('div');
+  d.className = 'sub';
+  d.style.marginTop = '10px';
+  d.textContent = '本机环境: 浏览器端引擎 ' + (window.BrowserOcr ? '已加载' : '未加载')
+    + ' · WASM 多线程 ' + (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated ? '可用' : '不可用(退单线程)')
+    + ' · 逻辑核心 ' + (navigator.hardwareConcurrency || '?');
+  document.querySelector('.wrap').appendChild(d);
+});
+let picked = null, timer = null;
+
+$('engine').onchange = () => {
+  const v = $('engine').value;
+  $('llmBox').className = v === 'llm' ? 'row' : 'row hide';
+  $('state').textContent = v === 'client' ? 'PDF 不会上传,在你这台电脑里识别' : '';
+};
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => take(e.target.files[0]);
+['dragenter','dragover'].forEach(t => $('drop').addEventListener(t, e => {
+  e.preventDefault(); $('drop').className = 'drop on'; }));
+['dragleave','drop'].forEach(t => $('drop').addEventListener(t, e => {
+  e.preventDefault(); $('drop').className = 'drop'; }));
+$('drop').addEventListener('drop', e => take(e.dataTransfer.files[0]));
+
+function take(f) {
+  if (!f) return;
+  if (!/\.pdf$/i.test(f.name)) { $('state').innerHTML = '<span class="err">只支持 PDF</span>'; return; }
+  picked = f;
+  $('pick').textContent = f.name + '  (' + (f.size/1048576).toFixed(1) + ' MB)';
+  $('go').disabled = false;
+  $('result').className = 'row hide';
+}
+
+$('go').onclick = () => {
+  if (!picked) return;
+  if ($('engine').value === 'client') { localRun(); return; }
+  const fd = new FormData();
+  fd.append('file', picked);
+  fd.append('engine', $('engine').value);
+  fd.append('dpi', $('dpi').value);
+  fd.append('deid', $('deid').checked ? 'on' : 'off');
+  fd.append('mode', $('mode').value);
+  fd.append('rules', $('rules').checked ? 'on' : 'off');
+  fd.append('server', $('server').value);
+  fd.append('model', $('model').value);
+  if ($('dict').files[0]) fd.append('dictfile', $('dict').files[0]);
+
+  $('go').disabled = true;
+  $('state').textContent = '上传中…';
+  $('log').textContent = '';
+  $('bar').style.width = '0%';
+  fetch('/upload', {method: 'POST', body: fd})
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      $('state').textContent = '识别中…';
+      poll(d.task);
+    })
+    .catch(e => { $('state').innerHTML = '<span class="err">' + e.message + '</span>'; $('go').disabled = false; });
+};
+
+function saveBlob(name, text) {
+  const a = document.createElement('a');
+  a.className = 'dl';
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  a.download = name;
+  a.textContent = '下载 ' + name;
+  return a;
+}
+
+async function localRun() {
+  const go = $('go');
+  go.disabled = true;
+  $('log').textContent = '';
+  $('result').className = 'row hide';
+  $('bar').style.width = '0%';
+  const log = s => { $('log').textContent += s + '\n'; $('log').scrollTop = 1e9; };
+  try {
+    $('state').textContent = '读取文件…';
+    const buf = await picked.arrayBuffer();
+    log('文件已读入内存: ' + (buf.byteLength / 1048576).toFixed(1) + ' MB');
+    let dictText = '';
+    if ($('dict').files[0]) dictText = await $('dict').files[0].text();
+    if (!window.BrowserOcr) throw new Error('浏览器端引擎没加载(app.js 缺失)');
+    const txt = await BrowserOcr.run(buf, {
+      dpi: +$('dpi').value || 220,
+      log: log,
+      onPage: (p, n, sec, lines) => {
+        $('bar').style.width = Math.round(p * 100 / n) + '%';
+        $('state').textContent = p + '/' + n + ' 页 · ' + sec + 's · ' + lines + ' 行';
+        log('[' + p + '/' + n + '] ' + sec + 's, ' + lines + ' 行');
+      },
+    });
+    const stem = picked.name.replace(/\.pdf$/i, '');
+    $('result').className = 'row';
+    $('result').innerHTML = '';
+    $('result').appendChild(saveBlob(stem + '.txt', txt));
+    if ($('deid').checked) {
+      const r = BrowserOcr.deidText(txt, dictText,
+                                   { mode: $('mode').value, rules: $('rules').checked });
+      log('脱敏: 字典 ' + r.nDict + ' 处, 正则 ' + r.nRule + ' 处'
+          + (dictText ? '' : ' (没上传字典,只遮格式类)'));
+      $('result').appendChild(saveBlob(stem + '_已脱敏.txt', r.text));
+    }
+    $('state').textContent = '完成(本机算的)';
+  } catch (e) {
+    $('state').innerHTML = '<span class="err">' + (e && e.message ? e.message : e) + '</span>';
+    log('失败: ' + (e && e.message ? e.message : e));
+    if (e && e.stack) log(String(e.stack).split('\n').slice(0, 6).join('\n'));
+  } finally {
+    go.disabled = false;
+  }
+}
+
+function poll(tid) {
+  clearInterval(timer);
+  timer = setInterval(() => {
+    fetch('/status/' + tid).then(r => r.json()).then(s => {
+      if (s.error) { clearInterval(timer); $('state').innerHTML = '<span class="err">' + s.error + '</span>'; $('go').disabled = false; return; }
+      const pct = s.total ? Math.round(s.page * 100 / s.total) : 0;
+      $('bar').style.width = pct + '%';
+      $('log').textContent = (s.log || []).join('\n');
+      $('log').scrollTop = $('log').scrollHeight;
+      $('state').textContent = s.status === 'queued' ? '排队中(另一份在跑)…'
+        : s.status === 'running' ? (s.total ? s.page + '/' + s.total + ' 页 (' + pct + '%)' : '初始化引擎…')
+        : s.status === 'done' ? '完成' : '失败';
+      if (s.status === 'done' || s.status === 'error') {
+        clearInterval(timer);
+        $('go').disabled = false;
+        if (s.status === 'done') {
+          let h = '';
+          if (s.has_deid) h += '<a class="dl" href="/download/' + tid + '/deid">下载脱敏 txt</a>';
+          if (s.has_raw) h += '<a class="dl" href="/download/' + tid + '/raw">下载原文 txt</a>';
+          $('result').className = 'row';
+          $('result').innerHTML = h;
+        }
+      }
+    });
+  }, 800);
+}
+</script></body></html>
