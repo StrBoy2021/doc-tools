@@ -130,8 +130,8 @@ $('font').onchange = async e => {
 
 async function defaultFont() {
   if (fontBytes) return fontBytes;
-  const r = await fetch('static/fonts/LXGWWenKai-Regular.ttf');
-  if (!r.ok) throw new Error('内置字体没加载到(/static/fonts/LXGWWenKai-Regular.ttf)');
+  const r = await fetch('static/fonts/LXGWWenKai-subset.ttf');
+  if (!r.ok) throw new Error('内置字体没加载到(/static/fonts/LXGWWenKai-subset.ttf)');
   return new Uint8Array(await r.arrayBuffer());
 }
 
