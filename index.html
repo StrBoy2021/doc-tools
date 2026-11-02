@@ -28,9 +28,8 @@
  .hint{color:#888;font-size:12px}
 </style></head><body><div class="wrap">
 <h1>OCR + 脱敏</h1>
-<div class="sub">传 PDF → 逐页识别 → 下载 txt。默认走服务器端纯 CPU 引擎,那台机器没有显卡也能跑。
-浏览器只负责上传和下载,识别不占用你当前电脑的 CPU。</div>
-<div class="sub" style="margin-bottom:12px"><a href="/">OCR + 脱敏</a> · <a href="/img2pdf">图片转 PDF</a> · <a href="/letter">律师函批量生成</a></div>
+<div class="sub">传 PDF → 在你的浏览器里逐页识别 → 下载 txt。PDF 不上传、服务器不参与、没有显卡也能跑。</div>
+<div class="sub" style="margin-bottom:12px"><a href="index.html">OCR + 脱敏</a> · <a href="img2pdf.html">图片转 PDF</a> · <a href="letter.html">律师函批量生成</a></div>
 
 <div class="card">
   <div class="drop" id="drop">把 PDF 拖到这里,或点一下选择文件
@@ -57,13 +56,13 @@
   </div>
   <div class="row">
     <label>字段字典</label><input type="file" id="dict" accept=".txt">
-    <span class="hint">不选则用服务器上的 字段字典.txt</span>
+    <span class="hint">不选则只遮格式类(身份证/手机/邮箱)</span>
   </div>
 
   <div class="row"><button id="go" disabled>开始识别</button>
     <span class="hint" id="state"></span></div>
   <div class="bar"><i id="bar"></i></div>
-  <pre id="log">等待上传…</pre>
+  <pre id="log">等待选择文件…</pre>
   <div id="result" class="row hide"></div>
 </div>
 
